@@ -268,6 +268,28 @@ fn default_whisper_binary_candidates() -> Vec<&'static str> {
     }
 }
 
+fn default_whisper_binary_paths() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/bin/whisper-cli"),
+            PathBuf::from("/usr/local/bin/whisper-cli"),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn default_ffmpeg_paths() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/bin/ffmpeg"),
+            PathBuf::from("/usr/local/bin/ffmpeg"),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
 fn find_in_path(binary: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
@@ -288,6 +310,14 @@ fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
             if let Some(path) = find_in_path(candidate) {
                 found = Some(path);
                 break;
+            }
+        }
+        if found.is_none() {
+            for candidate in default_whisper_binary_paths() {
+                if candidate.is_file() {
+                    found = Some(candidate);
+                    break;
+                }
             }
         }
         found.ok_or_else(|| {
@@ -500,7 +530,12 @@ fn is_wav(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-async fn convert_to_wav(input: &Path, output: &Path) -> Result<()> {
+async fn convert_to_wav(
+    input: &Path,
+    output: &Path,
+    jobs_state: &JobState,
+    job_id: &str,
+) -> Result<()> {
     let ffmpeg = std::env::var("FFMPEG_BINARY").unwrap_or_else(|_| "ffmpeg".to_string());
     let ffmpeg_path = Path::new(&ffmpeg);
     let resolved = if ffmpeg_path.components().count() > 1 {
@@ -510,13 +545,19 @@ async fn convert_to_wav(input: &Path, output: &Path) -> Result<()> {
         ffmpeg_path.to_path_buf()
     } else if let Some(found) = find_in_path(&ffmpeg) {
         found
+    } else if let Some(found) = default_ffmpeg_paths()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    {
+        found
     } else {
         return Err(anyhow!(
             "ffmpeg not found in PATH. Install ffmpeg or set FFMPEG_BINARY."
         ));
     };
-    let output_result = Command::new(&resolved)
+    let mut child = Command::new(&resolved)
         .arg("-y")
+        .arg("-nostdin")
         .arg("-i")
         .arg(input)
         .arg("-ar")
@@ -524,13 +565,32 @@ async fn convert_to_wav(input: &Path, output: &Path) -> Result<()> {
         .arg("-ac")
         .arg("1")
         .arg(output)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .with_context(|| format!("Failed to execute ffmpeg: {}", resolved.display()))?;
 
-    if !output_result.status.success() {
-        let stderr = String::from_utf8_lossy(&output_result.stderr);
-        return Err(anyhow!("ffmpeg failed: {stderr}"));
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture ffmpeg stderr"))?;
+    let stderr_state = jobs_state.clone();
+    let stderr_job = job_id.to_string();
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Some(line) = lines.next_line().await? {
+            if !line.trim().is_empty() {
+                append_log(&stderr_state, &stderr_job, &line);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let status = child.wait().await?;
+    let _ = stderr_task.await;
+
+    if !status.success() {
+        return Err(anyhow!("ffmpeg failed"));
     }
 
     Ok(())
@@ -935,8 +995,12 @@ async fn run_transcription(
     }
 
     let output_root = output_root(config)?;
-    let output_name = meeting_id.replace(['/', '\\'], "_");
-    let output_path = output_root.join(output_name).with_extension("txt");
+    let time_only = meeting_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(meeting_id)
+        .replace('\\', "_");
+    let output_path = output_root.join(time_only).with_extension("txt");
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -951,17 +1015,33 @@ async fn run_transcription(
     let include_speaker = config.whisper.include_speaker;
 
     for (index, track) in tracks.iter().enumerate() {
+        let progress_label = format!("Track {}/{}", index + 1, tracks.len());
         let local_file = temp_root.join(format!("track_{index}.ogg"));
+        append_log(
+            jobs_state,
+            job_id,
+            &format!("{progress_label}: downloading audio"),
+        );
         download_object(client, &config.minio.bucket, &track.key, &local_file).await?;
 
         let output_base = temp_root.join(format!("out_{index}"));
         let input_for_whisper = if is_wav(&local_file) {
             local_file.clone()
         } else {
+            append_log(
+                jobs_state,
+                job_id,
+                &format!("{progress_label}: converting to wav"),
+            );
             let wav_path = temp_root.join(format!("track_{index}.wav"));
-            convert_to_wav(&local_file, &wav_path).await?;
+            convert_to_wav(&local_file, &wav_path, jobs_state, job_id).await?;
             wav_path
         };
+        append_log(
+            jobs_state,
+            job_id,
+            &format!("{progress_label}: transcribing"),
+        );
         let segments = run_whisper_segments(
             &binary_path,
             &model_path,
@@ -1014,6 +1094,7 @@ async fn run_transcription(
     let mut map = jobs_state.lock().unwrap();
     if let Some(status) = map.get_mut(job_id) {
         status.state = "done".to_string();
+        status.completed = status.total;
         status.output_path = Some(output_path.to_string_lossy().to_string());
     }
     append_log(jobs_state, job_id, "Done");
@@ -1051,6 +1132,26 @@ async fn get_default_output_dir() -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+async fn get_default_whisper_binary() -> Result<Option<String>, String> {
+    let mut found: Option<PathBuf> = None;
+    for candidate in default_whisper_binary_candidates() {
+        if let Some(path) = find_in_path(candidate) {
+            found = Some(path);
+            break;
+        }
+    }
+    if found.is_none() {
+        for candidate in default_whisper_binary_paths() {
+            if candidate.is_file() {
+                found = Some(candidate);
+                break;
+            }
+        }
+    }
+    Ok(found.map(|path| path.to_string_lossy().to_string()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1065,6 +1166,7 @@ pub fn run() {
             get_config,
             set_config,
             get_default_output_dir,
+            get_default_whisper_binary,
             check_minio
         ])
         .run(tauri::generate_context!())

@@ -176,6 +176,20 @@ function App() {
       if (!merged.whisper.modelPath.trim()) {
         merged.whisper.modelPath = "ggml-large-v3.bin";
       }
+      if (!merged.whisper.binaryPath.trim()) {
+        const binaryPath = await invoke<string | null>(
+          "get_default_whisper_binary",
+        );
+        if (binaryPath) {
+          merged.whisper.binaryPath = binaryPath;
+        }
+      }
+      if (!merged.whisper.outputDir.trim()) {
+        const outputDir = await invoke<string>("get_default_output_dir");
+        if (outputDir) {
+          merged.whisper.outputDir = outputDir;
+        }
+      }
       lastSavedRef.current = JSON.stringify(merged);
       setConfig(merged);
     } catch (err) {
@@ -602,6 +616,20 @@ function App() {
                   <option value="ggml-large-v2.bin">large-v2</option>
                   <option value="ggml-large-v3.bin">large-v3</option>
                 </select>
+              </label>
+              <label className="field">
+                <span>WHISPER_BINARY</span>
+                <input
+                  type="text"
+                  value={config.whisper.binaryPath}
+                  onChange={(event) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      whisper: { ...prev.whisper, binaryPath: event.target.value },
+                    }))
+                  }
+                  placeholder="/opt/homebrew/bin/whisper-cli"
+                />
               </label>
               <label className="field">
                 <span>WHISPER_OUTPUT_DIR</span>
