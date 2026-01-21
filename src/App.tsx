@@ -486,9 +486,6 @@ function App() {
           <section className="section section-gap">
             <div className="row row-log">
               <h2>Log</h2>
-              <span className="status-badge">
-                {jobStatus?.completed ?? 0}/{jobStatus?.total ?? 0}
-              </span>
             </div>
             <pre ref={logRef} className="mono output-log">
               {jobStatus?.log ?? ""}

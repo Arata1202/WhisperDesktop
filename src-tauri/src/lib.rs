@@ -1091,13 +1091,14 @@ async fn run_transcription(
         .await
         .with_context(|| format!("Failed to write output: {}", output_path.display()))?;
 
+    append_log(jobs_state, job_id, "");
+    append_log(jobs_state, job_id, "Done");
     let mut map = jobs_state.lock().unwrap();
     if let Some(status) = map.get_mut(job_id) {
         status.state = "done".to_string();
         status.completed = status.total;
         status.output_path = Some(output_path.to_string_lossy().to_string());
     }
-    append_log(jobs_state, job_id, "Done");
 
     Ok(())
 }

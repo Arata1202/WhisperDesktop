@@ -142,13 +142,6 @@ button:disabled {
   margin-top: 0;
 }
 
-.status-badge {
-  margin-left: auto;
-  font-size: 18px;
-  color: var(--muted-text);
-  line-height: 1.2;
-}
-
 .row {
   display: flex;
   gap: 12px;
