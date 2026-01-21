@@ -1,9 +1,17 @@
 :root {
   color-scheme: light;
+  --bg: #f3f4f6;
+  --panel-bg: #ffffff;
+  --panel-border: #d2d6dc;
+  --muted-bg: #f3f4f6;
+  --accent: #3c82f5;
+  --accent-dark: #2563eb;
+  --text: #1b1b1b;
+  --muted-text: #4f5e57;
   font-family: "Avenir Next", "Hiragino Kaku Gothic ProN", "Yu Gothic",
     sans-serif;
-  background: #f5f1ea;
-  color: #1b1b1b;
+  background: var(--bg);
+  color: var(--text);
   font-size: 16px;
   line-height: 1.5;
   font-weight: 400;
@@ -22,7 +30,7 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #faf4e8, #f0e8d8);
+  background: var(--bg);
 }
 
 #root {
@@ -33,15 +41,15 @@ body {
 .app-shell {
   max-width: 960px;
   margin: 0 auto;
-  background: #fffaf1;
-  border: 1px solid #e3d9c5;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   border-radius: 16px;
   padding: 24px;
   box-shadow: 0 12px 32px rgba(28, 20, 8, 0.12);
 }
 
 h1 {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 28px;
   letter-spacing: 0.02em;
 }
@@ -55,20 +63,28 @@ button {
   padding: 10px 16px;
   border: none;
   border-radius: 10px;
-  background: #a2622d;
+  background: var(--accent);
   color: #fff;
   font-weight: 600;
   cursor: pointer;
 }
 
 button.secondary {
-  background: #4f5e57;
+  background: var(--accent-dark);
 }
 
 button.ghost {
-  background: transparent;
-  color: #4f5e57;
-  border: 1px solid #c8b79b;
+  background: var(--accent);
+  color: #ffffff;
+  border: none;
+}
+
+.button-full {
+  width: 100%;
+}
+
+.section-gap {
+  margin-top: 20px;
 }
 
 button:disabled {
@@ -76,54 +92,61 @@ button:disabled {
   opacity: 0.6;
 }
 
+.header {
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 16px;
+}
+
+.header-controls {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  background: var(--muted-bg);
+  padding: 4px;
+  border-radius: 12px;
+}
+
+.tab {
+  background: transparent;
+  color: var(--muted-text);
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+
+.tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .grid {
   display: grid;
   gap: 16px;
-}
-
-.grid.two {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .section {
   padding: 16px;
-  border: 1px solid #ede3d0;
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
-  background: #fffdf8;
+  background: var(--panel-bg);
 }
 
-.notice {
-  padding: 12px 16px;
-  border-radius: 10px;
-  background: #f2efe8;
-  color: #3b2b1d;
-  font-size: 13px;
+.section h2 {
+  margin-top: 0;
 }
 
-.notice.status {
-  margin-top: 16px;
-}
-
-.list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.list button {
-  width: 100%;
-  text-align: left;
-  background: #f9f3e8;
-  color: #1b1b1b;
-  border: 1px solid #e7dac4;
-}
-
-.list button.selected {
-  background: #a2622d;
-  color: #fff;
-  border-color: #8a4f23;
+.status-badge {
+  margin-left: auto;
+  font-size: 18px;
+  color: var(--muted-text);
+  line-height: 1.2;
 }
 
 .row {
@@ -133,11 +156,172 @@ button:disabled {
   align-items: center;
 }
 
-.spacer {
-  flex: 1;
+.row-log {
+  align-items: baseline;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.form-stack {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted-text);
+}
+
+.section > .field + .field {
+  margin-top: 20px;
+}
+
+.field-spaced {
+  margin-top: 10px;
+}
+
+.required-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.required-mark {
+  color: #dc2626;
+  font-weight: 700;
+}
+
+
+.field input,
+.field select {
+  padding: 10px 12px;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background-color: #ffffff;
+  color: var(--text);
+  line-height: 1.25;
+  width: 100%;
+}
+
+.field input:disabled,
+.field select:disabled {
+  background-color: var(--muted-bg);
+  color: var(--panel-border);
+  cursor: not-allowed;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, #6b7280 50%),
+    linear-gradient(135deg, #6b7280 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--muted-bg);
+  color: var(--muted-text);
+  font-size: 12px;
+  border: none;
+  cursor: pointer;
+}
+
+.status-indicator.status-ok {
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.status-indicator.status-ng {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #c1b7a7;
+  box-shadow: 0 0 0 2px rgba(193, 183, 167, 0.25);
+}
+
+.status-dot.status-ok {
+  background: #2f8f5b;
+  box-shadow: 0 0 0 2px rgba(47, 143, 91, 0.2);
+}
+
+.status-dot.status-ng {
+  background: #c1453a;
+  box-shadow: 0 0 0 2px rgba(193, 69, 58, 0.2);
+}
+
+.status-indicator:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.status-icon {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+
+.status-indicator.is-loading .status-icon {
+  animation: status-spin 0.8s linear infinite;
+}
+
+@keyframes status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
+}
+
+.output-log {
+  margin: 0;
+  padding: 14px 16px;
+  white-space: pre-wrap;
+  line-height: 1.6;
+  color: #d1d5db;
+  background: #0b0f16;
+  border-radius: 10px;
+  border: 1px solid #1f2937;
+  min-height: 240px;
+  height: 240px;
+  overflow-y: auto;
+  resize: vertical;
 }

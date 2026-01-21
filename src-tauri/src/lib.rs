@@ -9,19 +9,16 @@ use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::Client;
 use chrono::{NaiveTime, Timelike};
-use directories::ProjectDirs;
-use dotenvy;
-use futures_util::StreamExt;
-use reqwest::Url;
+use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct MinioConfig {
     url: String,
     #[serde(alias = "access_key")]
@@ -32,23 +29,35 @@ struct MinioConfig {
     region: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 struct WhisperConfig {
     #[serde(alias = "binary_path")]
     binary_path: String,
     #[serde(alias = "model_path")]
     model_path: String,
-    #[serde(alias = "binary_url")]
-    binary_url: String,
-    #[serde(alias = "model_url")]
-    model_url: String,
     #[serde(alias = "output_dir")]
     output_dir: String,
+    #[serde(alias = "include_timestamps")]
+    include_timestamps: bool,
+    #[serde(alias = "include_speaker")]
+    include_speaker: bool,
+}
+
+impl Default for WhisperConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: String::new(),
+            model_path: String::new(),
+            output_dir: String::new(),
+            include_timestamps: false,
+            include_speaker: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct AppConfig {
     minio: MinioConfig,
     whisper: WhisperConfig,
@@ -98,6 +107,7 @@ struct JobStatus {
     total: usize,
     output_path: Option<String>,
     error: Option<String>,
+    log: Option<String>,
 }
 
 type JobState = std::sync::Arc<Mutex<HashMap<String, JobStatus>>>;
@@ -108,50 +118,40 @@ fn project_dirs() -> Result<ProjectDirs> {
 }
 
 async fn effective_config() -> Result<AppConfig> {
-    Ok(load_env_config())
+    load_saved_config().await
 }
 
-fn try_load_env_from(base: &Path) {
-    let mut current = Some(base);
-    for _ in 0..6 {
-        if let Some(path) = current {
-            let env_path = path.join(".env");
-            if env_path.exists() {
-                let _ = dotenvy::from_path(env_path);
-                break;
+fn config_path() -> Result<PathBuf> {
+    let dirs = project_dirs()?;
+    Ok(dirs.config_dir().join("config.json"))
+}
+
+async fn load_saved_config() -> Result<AppConfig> {
+    let path = config_path()?;
+    match fs::read_to_string(&path).await {
+        Ok(contents) => {
+            let trimmed = contents.trim();
+            if trimmed.is_empty() {
+                return Ok(AppConfig::default());
             }
-            current = path.parent();
-        } else {
-            break;
+            let config: AppConfig = serde_json::from_str(trimmed)?;
+            Ok(config)
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(AppConfig::default()),
+        Err(err) => Err(err.into()),
     }
 }
 
-fn load_env_config() -> AppConfig {
-    if let Ok(current_dir) = std::env::current_dir() {
-        try_load_env_from(&current_dir);
+async fn save_config_file(config: &AppConfig) -> Result<()> {
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            try_load_env_from(exe_dir);
-        }
-    }
-
-    let mut config = AppConfig::default();
-    config.minio.url = std::env::var("MINIO_URL").unwrap_or_default();
-    config.minio.region = std::env::var("MINIO_REGION").unwrap_or_default();
-    config.minio.access_key = std::env::var("MINIO_ACCESS_KEY").unwrap_or_default();
-    config.minio.secret_key = std::env::var("MINIO_SECRET_KEY").unwrap_or_default();
-    config.minio.bucket = std::env::var("MINIO_BUCKET").unwrap_or_default();
-
-    config.whisper.binary_path = std::env::var("WHISPER_BINARY").unwrap_or_default();
-    config.whisper.model_path = std::env::var("WHISPER_MODEL").unwrap_or_default();
-    config.whisper.binary_url = std::env::var("WHISPER_BINARY_URL").unwrap_or_default();
-    config.whisper.model_url = std::env::var("WHISPER_MODEL_URL").unwrap_or_default();
-    config.whisper.output_dir = std::env::var("WHISPER_OUTPUT_DIR").unwrap_or_default();
-
-    config
+    let payload = serde_json::to_string_pretty(config)?;
+    fs::write(path, payload).await?;
+    Ok(())
 }
+
 
 async fn s3_client(config: &AppConfig) -> Result<Client> {
     let minio = &config.minio;
@@ -191,6 +191,20 @@ async fn s3_client(config: &AppConfig) -> Result<Client> {
     Ok(Client::from_conf(conf))
 }
 
+#[tauri::command]
+async fn check_minio() -> Result<(), String> {
+    let config = effective_config().await.map_err(|err| err.to_string())?;
+    let client = s3_client(&config).await.map_err(|err| err.to_string())?;
+    client
+        .list_objects_v2()
+        .bucket(&config.minio.bucket)
+        .max_keys(1)
+        .send()
+        .await
+        .map_err(format_sdk_error)?;
+    Ok(())
+}
+
 fn format_sdk_error<E: std::fmt::Debug>(err: SdkError<E>) -> String {
     format!("{err:?}")
 }
@@ -228,6 +242,15 @@ fn output_root(config: &AppConfig) -> Result<PathBuf> {
     if !config.whisper.output_dir.trim().is_empty() {
         return Ok(PathBuf::from(config.whisper.output_dir.trim()));
     }
+    default_output_dir()
+}
+
+fn default_output_dir() -> Result<PathBuf> {
+    if let Some(user_dirs) = UserDirs::new() {
+        if let Some(downloads) = user_dirs.download_dir() {
+            return Ok(downloads.to_path_buf());
+        }
+    }
     let dirs = project_dirs()?;
     Ok(dirs.data_dir().join("transcripts"))
 }
@@ -237,195 +260,100 @@ fn whisper_base_dir() -> Result<PathBuf> {
     Ok(dirs.data_dir().join("whisper"))
 }
 
+fn default_whisper_binary_candidates() -> Vec<&'static str> {
+    if cfg!(target_os = "windows") {
+        vec!["whisper.exe", "whisper-cpp.exe", "main.exe"]
+    } else {
+        vec!["whisper-cli", "whisper", "whisper-cpp", "main"]
+    }
+}
+
+fn find_in_path(binary: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
     let base_dir = whisper_base_dir()?;
-    let binary = if config.whisper.binary_path.trim().is_empty() {
-        base_dir.join("whisper")
+    let requested_binary = config.whisper.binary_path.trim();
+    let binary = if requested_binary.is_empty() {
+        let mut found: Option<PathBuf> = None;
+        for candidate in default_whisper_binary_candidates() {
+            if let Some(path) = find_in_path(candidate) {
+                found = Some(path);
+                break;
+            }
+        }
+        found.ok_or_else(|| {
+            anyhow!(
+                "whisper binary not found in PATH. Install whisper.cpp or set WHISPER_BINARY."
+            )
+        })?
     } else {
-        PathBuf::from(config.whisper.binary_path.trim())
+        let requested = PathBuf::from(requested_binary);
+        if requested.is_absolute() || requested.exists() {
+            requested
+        } else if let Some(found) = find_in_path(requested_binary) {
+            found
+        } else {
+            requested
+        }
     };
     let requested_model = config.whisper.model_path.trim();
-    let model = if requested_model.is_empty() || is_default_base_model(requested_model) {
+    let model = if requested_model.is_empty() {
         base_dir.join("models").join("ggml-large-v3.bin")
     } else {
-        PathBuf::from(requested_model)
+        let requested_path = PathBuf::from(requested_model);
+        if requested_path.is_absolute() {
+            requested_path
+        } else if requested_model.starts_with("models/") || requested_model.starts_with("models\\")
+        {
+            base_dir.join(requested_model)
+        } else {
+            base_dir.join("models").join(requested_model)
+        }
     };
     Ok((binary, model))
 }
 
-fn is_default_base_model(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed == "models/ggml-base.bin" || trimmed == "ggml-base.bin"
-}
-
-fn default_binary_urls() -> Result<Vec<Url>> {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let urls = match (os, arch) {
-        ("macos", "aarch64") => vec![
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.2-bin-macos-arm64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.1-bin-macos-arm64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.0-bin-macos-arm64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.6.0/whisper.cpp-v1.6.0-bin-macos-arm64.zip",
-        ],
-        ("macos", "x86_64") => vec![
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.2-bin-macos-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.1-bin-macos-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.0-bin-macos-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.6.0/whisper.cpp-v1.6.0-bin-macos-x64.zip",
-        ],
-        ("windows", "x86_64") => vec![
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.2-bin-win-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.1-bin-win-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.0-bin-win-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.6.0/whisper.cpp-v1.6.0-bin-win-x64.zip",
-        ],
-        ("linux", "x86_64") => vec![
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.2-bin-linux-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.1-bin-linux-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/latest/download/whisper.cpp-v1.6.0-bin-linux-x64.zip",
-            "https://github.com/ggerganov/whisper.cpp/releases/download/v1.6.0/whisper.cpp-v1.6.0-bin-linux-x64.zip",
-        ],
-        _ => return Err(anyhow!("Unsupported platform for auto download")),
-    };
-    let mut parsed = Vec::new();
-    for url in urls {
-        parsed.push(Url::parse(url)?);
+fn append_log(jobs_state: &JobState, job_id: &str, line: &str) {
+    let mut map = jobs_state.lock().unwrap();
+    if let Some(status) = map.get_mut(job_id) {
+        let log = status.log.get_or_insert_with(String::new);
+        log.push_str(line);
+        log.push('\n');
     }
-    Ok(parsed)
 }
 
-fn default_model_url() -> Result<Url> {
-    Ok(Url::parse(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-    )?)
-}
-
-async fn download_to_file(url: &Url, dest: &Path) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-    let response = reqwest::get(url.clone()).await?;
-    if !response.status().is_success() {
-        return Err(anyhow!("Download failed: {}", response.status()));
-    }
-    let mut file = fs::File::create(dest).await?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        file.write_all(&bytes).await?;
-    }
-    Ok(())
-}
-
-async fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<()> {
-    let zip_path = zip_path.to_path_buf();
-    let dest_dir = dest_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let file = std::fs::File::open(&zip_path)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
-            let out_path = dest_dir.join(entry.mangled_name());
-            if entry.is_dir() {
-                std::fs::create_dir_all(&out_path)?;
-                continue;
-            }
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut out_file = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut entry, &mut out_file)?;
-        }
-        Ok(())
-    })
-    .await??;
-    Ok(())
-}
-
-fn find_binary_in_dir(dir: &Path) -> Result<PathBuf> {
-    let mut candidates = Vec::new();
-    for entry in walkdir::WalkDir::new(dir) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name == "whisper" || name == "whisper.exe" || name == "main" || name == "main.exe" {
-            candidates.push(entry.path().to_path_buf());
-        }
-    }
-    candidates
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("Failed to locate whisper binary in archive"))
-}
-
-async fn ensure_whisper_resources(
-    config: &AppConfig,
-    jobs_state: &JobState,
-    job_id: &str,
-) -> Result<(PathBuf, PathBuf)> {
+async fn ensure_whisper_resources(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
     let (binary_path, model_path) = resolve_whisper_paths(config)?;
-    let base_dir = whisper_base_dir()?;
-
     if !binary_path.exists() {
-        {
-            let mut map = jobs_state.lock().unwrap();
-            if let Some(status) = map.get_mut(job_id) {
-                status.state = "downloading".to_string();
-            }
-        }
-        let urls = if config.whisper.binary_url.trim().is_empty() {
-            default_binary_urls()?
+        let hint = if config.whisper.binary_path.trim().is_empty() {
+            format!(
+                "Install whisper.cpp and ensure one of {:?} is in PATH.",
+                default_whisper_binary_candidates()
+            )
         } else {
-            vec![Url::parse(config.whisper.binary_url.trim())?]
+            "Set WHISPER_BINARY to a valid local path.".to_string()
         };
-        let zip_path = base_dir.join("whisper.zip");
-        let mut last_error: Option<anyhow::Error> = None;
-        for url in urls {
-            match download_to_file(&url, &zip_path).await {
-                Ok(_) => {
-                    last_error = None;
-                    break;
-                }
-                Err(err) => {
-                    last_error = Some(err);
-                    continue;
-                }
-            }
-        }
-        if let Some(err) = last_error {
-            return Err(anyhow!("Download failed for whisper binary: {err}"));
-        }
-        let extract_dir = base_dir.join("bin");
-        extract_zip(&zip_path, &extract_dir).await?;
-        let found = find_binary_in_dir(&extract_dir)?;
-        if let Some(parent) = binary_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        fs::copy(&found, &binary_path).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perm = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&binary_path, perm)?;
-        }
+        return Err(anyhow!(
+            "Whisper binary not found at {}. {}",
+            binary_path.display(),
+            hint
+        ));
     }
 
     if !model_path.exists() {
-        {
-            let mut map = jobs_state.lock().unwrap();
-            if let Some(status) = map.get_mut(job_id) {
-                status.state = "downloading".to_string();
-            }
-        }
-        let url = if config.whisper.model_url.trim().is_empty() {
-            default_model_url()?
-        } else {
-            Url::parse(config.whisper.model_url.trim())?
-        };
-        download_to_file(&url, &model_path).await?;
+        return Err(anyhow!(
+            "Whisper model not found at {}. Set WHISPER_MODEL to a local model file.",
+            model_path.display()
+        ));
     }
 
     Ok((binary_path, model_path))
@@ -459,10 +387,11 @@ async fn run_whisper_segments(
     model_path: &Path,
     input: &Path,
     output_base: &Path,
+    jobs_state: &JobState,
+    job_id: &str,
 ) -> Result<Vec<WhisperSegment>> {
     let output_base_str = output_base.to_string_lossy().to_string();
-
-    let status = Command::new(binary_path)
+    let mut child = Command::new(binary_path)
         .arg("-m")
         .arg(model_path)
         .arg("-f")
@@ -473,9 +402,45 @@ async fn run_whisper_segments(
         .arg("-otxt")
         .arg("-of")
         .arg(&output_base_str)
-        .status()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .with_context(|| "Failed to execute whisper")?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture whisper stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture whisper stderr"))?;
+    let stdout_state = jobs_state.clone();
+    let stdout_job = job_id.to_string();
+    let stderr_state = jobs_state.clone();
+    let stderr_job = job_id.to_string();
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Some(line) = lines.next_line().await? {
+            if !line.trim().is_empty() {
+                append_log(&stdout_state, &stdout_job, &line);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Some(line) = lines.next_line().await? {
+            if !line.trim().is_empty() {
+                append_log(&stderr_state, &stderr_job, &line);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    let status = child.wait().await?;
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
 
     if !status.success() {
         return Err(anyhow!("Whisper command failed"));
@@ -537,7 +502,20 @@ fn is_wav(path: &Path) -> bool {
 
 async fn convert_to_wav(input: &Path, output: &Path) -> Result<()> {
     let ffmpeg = std::env::var("FFMPEG_BINARY").unwrap_or_else(|_| "ffmpeg".to_string());
-    let output_result = Command::new(&ffmpeg)
+    let ffmpeg_path = Path::new(&ffmpeg);
+    let resolved = if ffmpeg_path.components().count() > 1 {
+        if !ffmpeg_path.exists() {
+            return Err(anyhow!("ffmpeg not found at {}", ffmpeg_path.display()));
+        }
+        ffmpeg_path.to_path_buf()
+    } else if let Some(found) = find_in_path(&ffmpeg) {
+        found
+    } else {
+        return Err(anyhow!(
+            "ffmpeg not found in PATH. Install ffmpeg or set FFMPEG_BINARY."
+        ));
+    };
+    let output_result = Command::new(&resolved)
         .arg("-y")
         .arg("-i")
         .arg(input)
@@ -548,7 +526,7 @@ async fn convert_to_wav(input: &Path, output: &Path) -> Result<()> {
         .arg(output)
         .output()
         .await
-        .with_context(|| format!("Failed to execute ffmpeg: {ffmpeg}"))?;
+        .with_context(|| format!("Failed to execute ffmpeg: {}", resolved.display()))?;
 
     if !output_result.status.success() {
         let stderr = String::from_utf8_lossy(&output_result.stderr);
@@ -681,6 +659,37 @@ fn format_seconds(value: f64) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
+fn format_segments(
+    segments: &[TranscriptionSegment],
+    include_timestamps: bool,
+    include_speaker: bool,
+) -> String {
+    let mut output = String::new();
+    for segment in segments {
+        if include_timestamps {
+            if include_speaker {
+                output.push_str(&format!(
+                    "{} {}：{}\n",
+                    format_seconds(segment.start),
+                    segment.speaker,
+                    segment.text
+                ));
+            } else {
+                output.push_str(&format!(
+                    "{} {}\n",
+                    format_seconds(segment.start),
+                    segment.text
+                ));
+            }
+        } else if include_speaker {
+            output.push_str(&format!("{}：{}\n", segment.speaker, segment.text));
+        } else {
+            output.push_str(&format!("{}\n", segment.text));
+        }
+    }
+    output
+}
+
 #[tauri::command]
 async fn list_dates() -> Result<Vec<String>, String> {
     let config = effective_config().await.map_err(|err| err.to_string())?;
@@ -810,7 +819,7 @@ async fn list_meetings(date: String) -> Result<Vec<MeetingSummary>, String> {
         )
         .collect();
 
-    list.sort_by(|a, b| a.meeting_time.cmp(&b.meeting_time));
+    list.sort_by(|a, b| b.meeting_time.cmp(&a.meeting_time));
     Ok(list)
 }
 
@@ -829,6 +838,7 @@ async fn start_transcribe(meeting_id: String, jobs: State<'_, JobState>) -> Resu
             total: 0,
             output_path: None,
             error: None,
+            log: Some(String::new()),
         },
     );
     drop(map);
@@ -866,7 +876,7 @@ async fn run_transcription(
     job_id: &str,
     jobs_state: &JobState,
 ) -> Result<()> {
-    let (binary_path, model_path) = ensure_whisper_resources(config, jobs_state, job_id).await?;
+    let (binary_path, model_path) = ensure_whisper_resources(config).await?;
     let prefix = format!("{}/", meeting_id);
     let mut tracks = Vec::new();
     let mut continuation: Option<String> = None;
@@ -925,17 +935,20 @@ async fn run_transcription(
     }
 
     let output_root = output_root(config)?;
-    let output_path = output_root.join(meeting_id).with_extension("txt");
+    let output_name = meeting_id.replace(['/', '\\'], "_");
+    let output_path = output_root.join(output_name).with_extension("txt");
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).await?;
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("Failed to create output dir: {}", parent.display()))?;
     }
 
     let temp_root = std::env::temp_dir().join("whisperdesktop").join(job_id);
     fs::create_dir_all(&temp_root).await?;
 
     let mut all_segments: Vec<TranscriptionSegment> = Vec::new();
-    let include_timestamps =
-        std::env::var("WHISPER_INCLUDE_TIMESTAMPS").ok().as_deref() == Some("1");
+    let include_timestamps = config.whisper.include_timestamps;
+    let include_speaker = config.whisper.include_speaker;
 
     for (index, track) in tracks.iter().enumerate() {
         let local_file = temp_root.join(format!("track_{index}.ogg"));
@@ -949,24 +962,38 @@ async fn run_transcription(
             convert_to_wav(&local_file, &wav_path).await?;
             wav_path
         };
-        let segments =
-            run_whisper_segments(&binary_path, &model_path, &input_for_whisper, &output_base).await?;
+        let segments = run_whisper_segments(
+            &binary_path,
+            &model_path,
+            &input_for_whisper,
+            &output_base,
+            jobs_state,
+            job_id,
+        )
+        .await?;
         let track_start_seconds = NaiveTime::parse_from_str(&track.track_time, "%H-%M-%S")
             .map(|t| t.num_seconds_from_midnight() as f64)
             .unwrap_or(0.0);
+        let mut track_segments: Vec<TranscriptionSegment> = Vec::new();
         for segment in segments {
             let cleaned = segment.text.trim();
             if cleaned.is_empty() {
                 continue;
             }
             let start_abs = track_start_seconds + segment.start;
-            all_segments.push(TranscriptionSegment {
+            track_segments.push(TranscriptionSegment {
                 start: start_abs,
                 speaker: track.speaker.clone(),
                 text: cleaned.to_string(),
             });
         }
 
+        track_segments.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all_segments.extend(track_segments.iter().cloned());
         let mut map = jobs_state.lock().unwrap();
         if let Some(status) = map.get_mut(job_id) {
             status.completed = index + 1;
@@ -978,27 +1005,18 @@ async fn run_transcription(
             .partial_cmp(&b.start)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut output = String::new();
-    for segment in all_segments {
-        if include_timestamps {
-            output.push_str(&format!(
-                "{} {}：{}\n",
-                format_seconds(segment.start),
-                segment.speaker,
-                segment.text
-            ));
-        } else {
-            output.push_str(&format!("{}：{}\n", segment.speaker, segment.text));
-        }
-    }
+    let output = format_segments(&all_segments, include_timestamps, include_speaker);
 
-    fs::write(&output_path, output).await?;
+    fs::write(&output_path, output)
+        .await
+        .with_context(|| format!("Failed to write output: {}", output_path.display()))?;
 
     let mut map = jobs_state.lock().unwrap();
     if let Some(status) = map.get_mut(job_id) {
         status.state = "done".to_string();
         status.output_path = Some(output_path.to_string_lossy().to_string());
     }
+    append_log(jobs_state, job_id, "Done");
 
     Ok(())
 }
@@ -1014,10 +1032,28 @@ async fn get_transcribe_status(
         .ok_or_else(|| "Job not found".to_string())
 }
 
+#[tauri::command]
+async fn get_config() -> Result<AppConfig, String> {
+    load_saved_config().await.map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn set_config(config: AppConfig) -> Result<(), String> {
+    save_config_file(&config)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn get_default_output_dir() -> Result<String, String> {
+    default_output_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|err| err.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(std::sync::Arc::new(Mutex::new(
             HashMap::<String, JobStatus>::new(),
         )))
@@ -1025,7 +1061,11 @@ pub fn run() {
             list_dates,
             list_meetings,
             start_transcribe,
-            get_transcribe_status
+            get_transcribe_status,
+            get_config,
+            set_config,
+            get_default_output_dir,
+            check_minio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
