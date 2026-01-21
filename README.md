@@ -33,7 +33,7 @@ xattr -d com.apple.quarantine "/Applications/whisperdesktop.app"
 winget install Git.Git
 
 # Install Python
-winget install Python.Python
+winget install Python.Python.3.12
 
 # Install ffmpeg
 winget install ffmpeg
