@@ -51,10 +51,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_BUNDLE_DEBUG: "1"
         with:
           tagName: ${{ env.VERSION_TAG }}
           releaseName: "tauri-app ${{ env.VERSION_TAG }}"
           releaseBody: "See the assets to download this version and install."
           includeDebug: false
-          args: --verbose ${{ matrix.args }}
+          args: ${{ matrix.args }}
