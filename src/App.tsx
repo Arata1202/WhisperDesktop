@@ -73,7 +73,7 @@ function App() {
   const [minioCheckLoading, setMinioCheckLoading] = useState(false);
   const [minioCheckStatus, setMinioCheckStatus] = useState<
     "idle" | "ok" | "ng"
-  >("idle");
+  >("ng");
 
   const pollingRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
