@@ -42,9 +42,10 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Read version and set env
+        shell: bash
         run: |
-          VERSION_TAG=v$(jq -r '.version' < src-tauri/tauri.conf.json)
-          echo "VERSION_TAG=$VERSION_TAG" >> $GITHUB_ENV
+          VERSION_TAG="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "VERSION_TAG=$VERSION_TAG" >> "$GITHUB_ENV"
 
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
