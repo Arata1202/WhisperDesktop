@@ -29,9 +29,19 @@ xattr -d com.apple.quarantine "/Applications/whisperdesktop.app"
 ### Install on Windows
 
 ```bash
-# Install dependencies
-winget install --id ggerganov.whisper.cpp --accept-source-agreements --accept-package-agreements
-winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
+# Install Git
+winget install Git.Git
+
+# Install Python
+winget install Python.Python
+
+# Install ffmpeg
+winget install ffmpeg
+
+# Reload PATH (log out or reboot)
+
+# Install Whisper
+python -m pip install git+https://github.com/openai/whisper.git
 
 # Download the MSI installer from the Releases page
 
