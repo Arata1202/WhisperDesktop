@@ -28,12 +28,14 @@ xattr -d com.apple.quarantine "/Applications/whisperdesktop.app"
 
 ### Install on Windows
 
+- https://github.com/ggml-org/whisper.cpp/releases
+- https://huggingface.co/ggerganov/whisper.cpp/tree/main
+
 ```powershell
 # Install ffmpeg
 winget install --id=Gyan.FFmpeg -e
 
 # Download whisper.cpp (whisper-bin-x64) from GitHub releases
-# https://github.com/ggml-org/whisper.cpp/releases
 
 # Extract the ZIP
 Expand-Archive -Path "C:\\Users\\<User>\\Downloads\\whisper-bin-x64.zip" -DestinationPath "C:\\Users\\<User>\\Downloads"
@@ -45,7 +47,6 @@ mkdir "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
 mv "C:\\Users\\<User>\\Downloads\\whisper-bin-x64" "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
 
 # Download models from Hugging Face
-# https://huggingface.co/ggerganov/whisper.cpp/tree/main
 
 # Place the model
 mv "C:\\Users\\<User>\\Downloads\\ggml-<MODEL>-v3.bin" "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
