@@ -76,6 +76,7 @@ function App() {
   const [minioCheckStatus, setMinioCheckStatus] = useState<
     "idle" | "ok" | "ng"
   >("ng");
+  const [modelRoot, setModelRoot] = useState("");
 
   const pollingRef = useRef<number | null>(null);
   const saveInFlightRef = useRef(false);
@@ -165,8 +166,22 @@ function App() {
     whisper: { ...defaultConfig.whisper, ...incoming.whisper },
   });
 
+  const isWindowsPath = (value: string) =>
+    value.includes(":\\") || value.includes(":/");
+
+  const joinPath = (root: string, leaf: string) => {
+    if (!root) return leaf;
+    const separator = root.includes("\\") ? "\\" : "/";
+    if (root.endsWith("/") || root.endsWith("\\")) {
+      return `${root}${leaf}`;
+    }
+    return `${root}${separator}${leaf}`;
+  };
+
   const loadConfig = async () => {
     try {
+      const root = await invoke<string>("get_default_whisper_model_root");
+      setModelRoot(root);
       const result = await invoke<AppConfig>("get_config");
       const merged = mergeConfig(result);
       if (merged.whisper.modelPath.endsWith(".en.bin")) {
@@ -177,6 +192,14 @@ function App() {
       }
       if (!merged.whisper.modelPath.trim()) {
         merged.whisper.modelPath = "ggml-large-v3.bin";
+      }
+      if (root && isWindowsPath(root)) {
+        const cleaned = merged.whisper.modelPath
+          .replace(/^models[\\/]/, "")
+          .trim();
+        if (!cleaned.includes("/") && !cleaned.includes("\\") && cleaned) {
+          merged.whisper.modelPath = joinPath(root, cleaned);
+        }
       }
       if (!merged.whisper.binaryPath.trim()) {
         const binaryPath = await invoke<string | null>(
@@ -313,6 +336,24 @@ function App() {
     if (serialized === lastSavedRef.current) return;
     queueSave(config);
   }, [config, configLoaded]);
+
+  const modelOptions = useMemo(() => {
+    const models = [
+      { label: "tiny", file: "ggml-tiny.bin" },
+      { label: "base", file: "ggml-base.bin" },
+      { label: "small", file: "ggml-small.bin" },
+      { label: "medium", file: "ggml-medium.bin" },
+      { label: "large-v2", file: "ggml-large-v2.bin" },
+      { label: "large-v3", file: "ggml-large-v3.bin" },
+    ];
+    if (modelRoot && isWindowsPath(modelRoot)) {
+      return models.map((model) => ({
+        label: model.label,
+        value: joinPath(modelRoot, model.file),
+      }));
+    }
+    return models.map((model) => ({ label: model.label, value: model.file }));
+  }, [modelRoot]);
 
   return (
     <main className="app-shell">
@@ -616,12 +657,11 @@ function App() {
                     }));
                   }}
                 >
-                  <option value="ggml-tiny.bin">tiny</option>
-                  <option value="ggml-base.bin">base</option>
-                  <option value="ggml-small.bin">small</option>
-                  <option value="ggml-medium.bin">medium</option>
-                  <option value="ggml-large-v2.bin">large-v2</option>
-                  <option value="ggml-large-v3.bin">large-v3</option>
+                  {modelOptions.map((model) => (
+                    <option key={model.value} value={model.value}>
+                      {model.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="field">

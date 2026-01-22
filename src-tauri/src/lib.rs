@@ -270,6 +270,17 @@ fn whisper_base_dir() -> Result<PathBuf> {
     Ok(dirs.data_dir().join("whisper"))
 }
 
+fn default_whisper_model_root() -> Result<PathBuf> {
+    if cfg!(target_os = "windows") {
+        if let Some(user_dirs) = UserDirs::new() {
+            if let Some(documents) = user_dirs.document_dir() {
+                return Ok(documents.to_path_buf());
+            }
+        }
+    }
+    Ok(whisper_base_dir()?.join("models"))
+}
+
 fn default_whisper_binary_candidates() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
         vec!["whisper-cli.exe", "whisper.exe", "whisper-cpp.exe", "main.exe"]
@@ -353,7 +364,7 @@ fn find_ffmpeg_in_winget() -> Option<PathBuf> {
 }
 
 fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
-    let base_dir = whisper_base_dir()?;
+    let model_root = default_whisper_model_root()?;
     let requested_binary = config.whisper.binary_path.trim();
     let binary = if requested_binary.is_empty() {
         let mut found: Option<PathBuf> = None;
@@ -387,17 +398,21 @@ fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
         }
     };
     let requested_model = config.whisper.model_path.trim();
+    let cleaned_model = if requested_model.starts_with("models/") {
+        requested_model.trim_start_matches("models/")
+    } else if requested_model.starts_with("models\\") {
+        requested_model.trim_start_matches("models\\")
+    } else {
+        requested_model
+    };
     let model = if requested_model.is_empty() {
-        base_dir.join("models").join("ggml-large-v3.bin")
+        model_root.join("ggml-large-v3.bin")
     } else {
         let requested_path = PathBuf::from(requested_model);
         if requested_path.is_absolute() {
             requested_path
-        } else if requested_model.starts_with("models/") || requested_model.starts_with("models\\")
-        {
-            base_dir.join(requested_model)
         } else {
-            base_dir.join("models").join(requested_model)
+            model_root.join(cleaned_model)
         }
     };
     Ok((binary, model))
@@ -1260,6 +1275,13 @@ async fn get_default_whisper_binary() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+async fn get_default_whisper_model_root() -> Result<String, String> {
+    default_whisper_model_root()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 async fn get_default_ffmpeg_binary() -> Result<Option<String>, String> {
     Ok(default_ffmpeg_path().map(|path| path.to_string_lossy().to_string()))
 }
@@ -1279,6 +1301,7 @@ pub fn run() {
             set_config,
             get_default_output_dir,
             get_default_whisper_binary,
+            get_default_whisper_model_root,
             get_default_ffmpeg_binary,
             check_minio
         ])
