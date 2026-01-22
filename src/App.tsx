@@ -573,7 +573,6 @@ function App() {
                       minio: { ...prev.minio, url: event.target.value },
                     }))
                   }
-                  placeholder="https://..."
                 />
               </label>
               <label className="field">
@@ -589,7 +588,6 @@ function App() {
                       minio: { ...prev.minio, region: event.target.value },
                     }))
                   }
-                  placeholder="ap-northeast-1"
                 />
               </label>
               <label className="field">
@@ -688,7 +686,6 @@ function App() {
                       whisper: { ...prev.whisper, binaryPath: event.target.value },
                     }))
                   }
-                  placeholder="/opt/homebrew/bin/whisper-cli"
                 />
               </label>
               <label className="field">
@@ -702,7 +699,6 @@ function App() {
                       whisper: { ...prev.whisper, ffmpegPath: event.target.value },
                     }))
                   }
-                  placeholder="/opt/homebrew/bin/ffmpeg"
                 />
               </label>
             </div>

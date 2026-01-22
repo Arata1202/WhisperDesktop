@@ -28,20 +28,27 @@ xattr -d com.apple.quarantine "/Applications/whisperdesktop.app"
 
 ### Install on Windows
 
-```bash
-# Install Git
-winget install Git.Git
-
-# Install Python
-winget install Python.Python.3.12
-
+```powershell
 # Install ffmpeg
 winget install --id=Gyan.FFmpeg -e
 
-# Reload PATH (log out or reboot)
+# Download whisper.cpp (whisper-bin-x64) from GitHub releases
+# https://github.com/ggml-org/whisper.cpp/releases
 
-# Install Whisper
-python -m pip install git+https://github.com/openai/whisper.git
+# Extract the ZIP
+Expand-Archive -Path "C:\\Users\\<User>\\Downloads\\whisper-bin-x64.zip" -DestinationPath "C:\\Users\\<User>\\Downloads"
+
+# Create WhisperDesktop Directory
+mkdir "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
+
+# Place whisper.cpp (whisper-bin-x64)
+mv "C:\\Users\\<User>\\Downloads\\whisper-bin-x64" "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
+
+# Download models from Hugging Face
+# https://huggingface.co/ggerganov/whisper.cpp/tree/main
+
+# Place the model
+mv "C:\\Users\\<User>\\Downloads\\ggml-<MODEL>-v3.bin" "C:\\Users\\<User>\\Documents\\WhisperDesktop\\"
 
 # Download the MSI installer from the Releases page
 
