@@ -9,7 +9,7 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::Client;
-use chrono::{NaiveTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -246,6 +246,28 @@ fn parse_japanese_time(value: &str) -> Option<NaiveTime> {
     NaiveTime::from_hms_opt(hour, minute, second)
 }
 
+fn parse_japanese_date(value: &str) -> Option<NaiveDate> {
+    let trimmed = value.trim();
+    let (year_part, rest) = trimmed.split_once('年')?;
+    let (month_part, rest) = rest.split_once('月')?;
+    let day_part = rest.strip_suffix('日')?;
+    let year: i32 = year_part.parse().ok()?;
+    let month: u32 = month_part.parse().ok()?;
+    let day: u32 = day_part.parse().ok()?;
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+fn parse_date_any(value: &str) -> Option<NaiveDate> {
+    if value.contains('年') || value.contains('月') || value.contains('日') {
+        if let Some(date) = parse_japanese_date(value) {
+            return Some(date);
+        }
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .or_else(|| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
+}
+
 fn parse_hyphen_time(value: &str) -> Option<NaiveTime> {
     let mut parts = value.split('-');
     let hour: u32 = parts.next()?.parse().ok()?;
@@ -285,6 +307,11 @@ fn format_time_japanese(value: &str) -> Option<String> {
         time.minute(),
         time.second()
     ))
+}
+
+fn format_date_japanese(value: &str) -> Option<String> {
+    let date = parse_date_any(value)?;
+    Some(format!("{}年{}月{}日", date.year(), date.month(), date.day()))
 }
 
 fn extract_room_label(room_id: &str) -> String {
@@ -1180,12 +1207,18 @@ async fn run_transcription(
     }
 
     let output_root = output_root(config)?;
-    let time_only = meeting_id
-        .rsplit('/')
-        .next()
-        .unwrap_or(meeting_id)
-        .replace('\\', "_");
-    let output_file = format_time_japanese(&time_only).unwrap_or(time_only);
+    let mut parts = meeting_id.splitn(3, '/');
+    let date_part = parts.next().unwrap_or(meeting_id);
+    let room_part = parts.next().unwrap_or("unknown_room");
+    let time_part = parts.next().unwrap_or("unknown_time");
+    let formatted_date = format_date_japanese(date_part)
+        .unwrap_or_else(|| date_part.replace(['/', '\\'], "_"));
+    let safe_date = formatted_date.replace(['/', '\\'], "_");
+    let safe_room = room_part.replace(['/', '\\'], "_");
+    let formatted_time =
+        format_time_japanese(time_part).unwrap_or_else(|| time_part.to_string());
+    let safe_time = formatted_time.replace(['/', '\\'], "_");
+    let output_file = format!("{safe_date}_{safe_room}_{safe_time}");
     let output_path = output_root.join(output_file).with_extension("txt");
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
