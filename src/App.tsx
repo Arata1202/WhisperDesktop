@@ -6,6 +6,7 @@ type MeetingSummary = {
   id: string;
   date: string;
   roomId: string;
+  roomLabel: string;
   meetingTime: string;
 };
 
@@ -89,20 +90,45 @@ function App() {
 
   const rooms = useMemo(() => {
     if (!hasMeetings) return [];
-    const roomSet = new Set(meetings.map((meeting) => meeting.roomId));
+    const roomSet = new Set(meetings.map((meeting) => meeting.roomLabel));
     return Array.from(roomSet).sort();
   }, [hasMeetings, meetings]);
 
   const filteredMeetings = useMemo(() => {
     if (!selectedRoom) return meetings;
-    return meetings.filter((meeting) => meeting.roomId === selectedRoom);
+    return meetings.filter((meeting) => meeting.roomLabel === selectedRoom);
   }, [meetings, selectedRoom]);
+
+  const parseDateKey = (value: string) => {
+    const jpMatch = value.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日$/);
+    if (jpMatch) {
+      const [, year, month, day] = jpMatch;
+      return Number(year) * 10000 + Number(month) * 100 + Number(day);
+    }
+    const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (isoMatch) {
+      const [, year, month, day] = isoMatch;
+      return Number(year) * 10000 + Number(month) * 100 + Number(day);
+    }
+    return null;
+  };
+
+  const compareDateKeysDesc = (a: string, b: string) => {
+    const aKey = parseDateKey(a);
+    const bKey = parseDateKey(b);
+    if (aKey !== null && bKey !== null) {
+      return bKey - aKey;
+    }
+    if (aKey !== null) return -1;
+    if (bKey !== null) return 1;
+    return b.localeCompare(a);
+  };
 
   const refreshDates = async () => {
     setDatesLoading(true);
     try {
       const result = await invoke<string[]>("list_dates");
-      const sorted = [...result].sort().reverse();
+      const sorted = [...result].sort(compareDateKeysDesc);
       setDates(sorted);
       if (result.length > 0) {
         setSelectedDate(null);

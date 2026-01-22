@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -72,6 +73,7 @@ struct MeetingSummary {
     id: String,
     date: String,
     room_id: String,
+    room_label: String,
     meeting_time: String,
     speaker_count: usize,
     track_count: usize,
@@ -231,6 +233,70 @@ fn parse_key(key: &str) -> Option<(String, String, String, String, String)> {
     };
 
     Some((date, room_id, meeting_time, speaker, track_time))
+}
+
+fn parse_japanese_time(value: &str) -> Option<NaiveTime> {
+    let trimmed = value.trim();
+    let (hour_part, rest) = trimmed.split_once('時')?;
+    let (minute_part, rest) = rest.split_once('分')?;
+    let second_part = rest.strip_suffix('秒')?;
+    let hour: u32 = hour_part.parse().ok()?;
+    let minute: u32 = minute_part.parse().ok()?;
+    let second: u32 = second_part.parse().ok()?;
+    NaiveTime::from_hms_opt(hour, minute, second)
+}
+
+fn parse_hyphen_time(value: &str) -> Option<NaiveTime> {
+    let mut parts = value.split('-');
+    let hour: u32 = parts.next()?.parse().ok()?;
+    let minute: u32 = parts.next()?.parse().ok()?;
+    let second: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    NaiveTime::from_hms_opt(hour, minute, second)
+}
+
+fn parse_time_any(value: &str) -> Option<NaiveTime> {
+    if value.contains('時') || value.contains('分') || value.contains('秒') {
+        if let Some(time) = parse_japanese_time(value) {
+            return Some(time);
+        }
+    }
+    NaiveTime::parse_from_str(value, "%H-%M-%S")
+        .ok()
+        .or_else(|| parse_hyphen_time(value))
+}
+
+fn compare_time_string(a: &str, b: &str) -> Ordering {
+    match (parse_time_any(a), parse_time_any(b)) {
+        (Some(a_time), Some(b_time)) => a_time.cmp(&b_time),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
+fn format_time_japanese(value: &str) -> Option<String> {
+    let time = parse_time_any(value)?;
+    Some(format!(
+        "{}時{}分{}秒",
+        time.hour(),
+        time.minute(),
+        time.second()
+    ))
+}
+
+fn extract_room_label(room_id: &str) -> String {
+    const PREFIX: &str = "localWorld.";
+    if let Some(rest) = room_id.strip_prefix(PREFIX) {
+        if let Some((_, label)) = rest.split_once('-') {
+            if !label.is_empty() {
+                return label.to_string();
+            }
+        }
+    }
+    room_id.to_string()
 }
 
 fn sanitize_time(value: &str) -> String {
@@ -982,18 +1048,22 @@ async fn list_meetings(date: String) -> Result<Vec<MeetingSummary>, String> {
     let mut list: Vec<MeetingSummary> = meetings
         .into_iter()
         .map(
-            |(id, (date, room_id, meeting_time, speakers, track_count))| MeetingSummary {
+            |(id, (date, room_id, meeting_time, speakers, track_count))| {
+                let room_label = extract_room_label(&room_id);
+                MeetingSummary {
                 id,
                 date,
                 room_id,
+                room_label,
                 meeting_time,
                 speaker_count: speakers.len(),
                 track_count,
+                }
             },
         )
         .collect();
 
-    list.sort_by(|a, b| b.meeting_time.cmp(&a.meeting_time));
+    list.sort_by(|a, b| compare_time_string(&b.meeting_time, &a.meeting_time));
     Ok(list)
 }
 
@@ -1090,7 +1160,7 @@ async fn run_transcription(
         }
     }
 
-    tracks.sort_by(|a, b| a.track_time.cmp(&b.track_time));
+    tracks.sort_by(|a, b| compare_time_string(&a.track_time, &b.track_time));
     eprintln!(
         "run_transcription meeting_id={} tracks_found={}",
         meeting_id,
@@ -1115,7 +1185,8 @@ async fn run_transcription(
         .next()
         .unwrap_or(meeting_id)
         .replace('\\', "_");
-    let output_path = output_root.join(time_only).with_extension("txt");
+    let output_file = format_time_japanese(&time_only).unwrap_or(time_only);
+    let output_path = output_root.join(output_file).with_extension("txt");
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
             .await
@@ -1166,7 +1237,7 @@ async fn run_transcription(
             job_id,
         )
         .await?;
-        let track_start_seconds = NaiveTime::parse_from_str(&track.track_time, "%H-%M-%S")
+        let track_start_seconds = parse_time_any(&track.track_time)
             .map(|t| t.num_seconds_from_midnight() as f64)
             .unwrap_or(0.0);
         let mut track_segments: Vec<TranscriptionSegment> = Vec::new();
