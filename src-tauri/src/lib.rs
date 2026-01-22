@@ -260,10 +260,8 @@ fn default_output_dir() -> Result<PathBuf> {
 
 fn whisper_base_dir() -> Result<PathBuf> {
     if cfg!(target_os = "windows") {
-        if let Some(user_dirs) = UserDirs::new() {
-            if let Some(documents) = user_dirs.document_dir() {
-                return Ok(documents.join("WhisperDesktop").join("whisper"));
-            }
+        if let Some(documents) = windows_documents_dir() {
+            return Ok(documents.join("WhisperDesktop").join("whisper"));
         }
     }
     let dirs = project_dirs()?;
@@ -272,13 +270,21 @@ fn whisper_base_dir() -> Result<PathBuf> {
 
 fn default_whisper_model_root() -> Result<PathBuf> {
     if cfg!(target_os = "windows") {
-        if let Some(user_dirs) = UserDirs::new() {
-            if let Some(documents) = user_dirs.document_dir() {
-                return Ok(documents.to_path_buf());
-            }
+        if let Some(documents) = windows_documents_dir() {
+            return Ok(documents.join("WhisperDesktop"));
         }
     }
     Ok(whisper_base_dir()?.join("models"))
+}
+
+fn windows_documents_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        return Some(PathBuf::from(user_profile).join("Documents"));
+    }
+    None
 }
 
 fn default_whisper_binary_candidates() -> Vec<&'static str> {
@@ -296,13 +302,12 @@ fn default_whisper_binary_paths() -> Vec<PathBuf> {
             PathBuf::from("/usr/local/bin/whisper-cli"),
         ]
     } else if cfg!(target_os = "windows") {
-        if let Some(user_dirs) = UserDirs::new() {
-            if let Some(documents) = user_dirs.document_dir() {
-                return vec![documents
-                    .join("whisper-bin-x64")
-                    .join("Release")
-                    .join("whisper-cli.exe")];
-            }
+        if let Some(documents) = windows_documents_dir() {
+            return vec![documents
+                .join("WhisperDesktop")
+                .join("whisper-bin-x64")
+                .join("Release")
+                .join("whisper-cli.exe")];
         }
         Vec::new()
     } else {
@@ -1246,14 +1251,13 @@ async fn get_default_output_dir() -> Result<String, String> {
 #[tauri::command]
 async fn get_default_whisper_binary() -> Result<Option<String>, String> {
     if cfg!(target_os = "windows") {
-        if let Some(user_dirs) = UserDirs::new() {
-            if let Some(documents) = user_dirs.document_dir() {
-                let path = documents
-                    .join("whisper-bin-x64")
-                    .join("Release")
-                    .join("whisper-cli.exe");
-                return Ok(Some(path.to_string_lossy().to_string()));
-            }
+        if let Some(documents) = windows_documents_dir() {
+            let path = documents
+                .join("WhisperDesktop")
+                .join("whisper-bin-x64")
+                .join("Release")
+                .join("whisper-cli.exe");
+            return Ok(Some(path.to_string_lossy().to_string()));
         }
     }
     let mut found: Option<PathBuf> = None;
