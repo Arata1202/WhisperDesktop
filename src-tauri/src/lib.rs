@@ -34,6 +34,8 @@ struct MinioConfig {
 struct WhisperConfig {
     #[serde(alias = "binary_path")]
     binary_path: String,
+    #[serde(alias = "ffmpeg_path")]
+    ffmpeg_path: String,
     #[serde(alias = "model_path")]
     model_path: String,
     #[serde(alias = "output_dir")]
@@ -48,6 +50,7 @@ impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
             binary_path: String::new(),
+            ffmpeg_path: String::new(),
             model_path: String::new(),
             output_dir: String::new(),
             include_timestamps: false,
@@ -256,13 +259,20 @@ fn default_output_dir() -> Result<PathBuf> {
 }
 
 fn whisper_base_dir() -> Result<PathBuf> {
+    if cfg!(target_os = "windows") {
+        if let Some(user_dirs) = UserDirs::new() {
+            if let Some(documents) = user_dirs.document_dir() {
+                return Ok(documents.join("WhisperDesktop").join("whisper"));
+            }
+        }
+    }
     let dirs = project_dirs()?;
     Ok(dirs.data_dir().join("whisper"))
 }
 
 fn default_whisper_binary_candidates() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
-        vec!["whisper.exe", "whisper-cpp.exe", "main.exe"]
+        vec!["whisper-cli.exe", "whisper.exe", "whisper-cpp.exe", "main.exe"]
     } else {
         vec!["whisper-cli", "whisper", "whisper-cpp", "main"]
     }
@@ -274,6 +284,16 @@ fn default_whisper_binary_paths() -> Vec<PathBuf> {
             PathBuf::from("/opt/homebrew/bin/whisper-cli"),
             PathBuf::from("/usr/local/bin/whisper-cli"),
         ]
+    } else if cfg!(target_os = "windows") {
+        if let Some(user_dirs) = UserDirs::new() {
+            if let Some(documents) = user_dirs.document_dir() {
+                return vec![documents
+                    .join("whisper-bin-x64")
+                    .join("Release")
+                    .join("whisper-cli.exe")];
+            }
+        }
+        Vec::new()
     } else {
         Vec::new()
     }
@@ -299,6 +319,37 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn find_ffmpeg_in_winget() -> Option<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    let root = PathBuf::from(local_app_data)
+        .join("Microsoft")
+        .join("WinGet")
+        .join("Packages");
+    fn search_dir(dir: &Path, depth: usize) -> Option<PathBuf> {
+        if depth == 0 {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search_dir(&path, depth - 1) {
+                    return Some(found);
+                }
+            } else if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+                if name.eq_ignore_ascii_case("ffmpeg.exe") {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+    search_dir(&root, 5)
 }
 
 fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
@@ -350,6 +401,67 @@ fn resolve_whisper_paths(config: &AppConfig) -> Result<(PathBuf, PathBuf)> {
         }
     };
     Ok((binary, model))
+}
+
+fn resolve_ffmpeg_path(config: &AppConfig) -> Result<PathBuf> {
+    let requested = config.whisper.ffmpeg_path.trim();
+    if !requested.is_empty() {
+        let requested_path = PathBuf::from(requested);
+        if requested_path.is_file() {
+            return Ok(requested_path);
+        }
+        if let Some(found) = find_in_path(requested) {
+            return Ok(found);
+        }
+    }
+    if let Ok(env_value) = std::env::var("FFMPEG_BINARY") {
+        let env_path = PathBuf::from(env_value);
+        if env_path.is_file() {
+            return Ok(env_path);
+        }
+        if let Some(found) = find_in_path(env_path.to_string_lossy().as_ref()) {
+            return Ok(found);
+        }
+    }
+    if let Some(found) = find_in_path(if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }) {
+        return Ok(found);
+    }
+    if let Some(found) = default_ffmpeg_paths()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    {
+        return Ok(found);
+    }
+    if let Some(found) = find_ffmpeg_in_winget() {
+        return Ok(found);
+    }
+    Err(anyhow!(
+        "ffmpeg not found. Install ffmpeg or set FFMPEG_BINARY."
+    ))
+}
+
+fn default_ffmpeg_path() -> Option<PathBuf> {
+    if let Ok(env_value) = std::env::var("FFMPEG_BINARY") {
+        let env_path = PathBuf::from(env_value);
+        if env_path.is_file() {
+            return Some(env_path);
+        }
+    }
+    if let Some(found) = find_in_path(if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }) {
+        return Some(found);
+    }
+    default_ffmpeg_paths()
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .or_else(find_ffmpeg_in_winget)
 }
 
 fn append_log(jobs_state: &JobState, job_id: &str, line: &str) {
@@ -533,29 +645,11 @@ fn is_wav(path: &Path) -> bool {
 async fn convert_to_wav(
     input: &Path,
     output: &Path,
+    ffmpeg_path: &Path,
     jobs_state: &JobState,
     job_id: &str,
 ) -> Result<()> {
-    let ffmpeg = std::env::var("FFMPEG_BINARY").unwrap_or_else(|_| "ffmpeg".to_string());
-    let ffmpeg_path = Path::new(&ffmpeg);
-    let resolved = if ffmpeg_path.components().count() > 1 {
-        if !ffmpeg_path.exists() {
-            return Err(anyhow!("ffmpeg not found at {}", ffmpeg_path.display()));
-        }
-        ffmpeg_path.to_path_buf()
-    } else if let Some(found) = find_in_path(&ffmpeg) {
-        found
-    } else if let Some(found) = default_ffmpeg_paths()
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-    {
-        found
-    } else {
-        return Err(anyhow!(
-            "ffmpeg not found in PATH. Install ffmpeg or set FFMPEG_BINARY."
-        ));
-    };
-    let mut child = Command::new(&resolved)
+    let mut child = Command::new(ffmpeg_path)
         .arg("-y")
         .arg("-nostdin")
         .arg("-i")
@@ -568,7 +662,7 @@ async fn convert_to_wav(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to execute ffmpeg: {}", resolved.display()))?;
+        .with_context(|| format!("Failed to execute ffmpeg: {}", ffmpeg_path.display()))?;
 
     let stderr = child
         .stderr
@@ -937,6 +1031,7 @@ async fn run_transcription(
     jobs_state: &JobState,
 ) -> Result<()> {
     let (binary_path, model_path) = ensure_whisper_resources(config).await?;
+    let ffmpeg_path = resolve_ffmpeg_path(config)?;
     let prefix = format!("{}/", meeting_id);
     let mut tracks = Vec::new();
     let mut continuation: Option<String> = None;
@@ -1034,7 +1129,7 @@ async fn run_transcription(
                 &format!("{progress_label}: converting to wav"),
             );
             let wav_path = temp_root.join(format!("track_{index}.wav"));
-            convert_to_wav(&local_file, &wav_path, jobs_state, job_id).await?;
+            convert_to_wav(&local_file, &wav_path, &ffmpeg_path, jobs_state, job_id).await?;
             wav_path
         };
         append_log(
@@ -1135,6 +1230,17 @@ async fn get_default_output_dir() -> Result<String, String> {
 
 #[tauri::command]
 async fn get_default_whisper_binary() -> Result<Option<String>, String> {
+    if cfg!(target_os = "windows") {
+        if let Some(user_dirs) = UserDirs::new() {
+            if let Some(documents) = user_dirs.document_dir() {
+                let path = documents
+                    .join("whisper-bin-x64")
+                    .join("Release")
+                    .join("whisper-cli.exe");
+                return Ok(Some(path.to_string_lossy().to_string()));
+            }
+        }
+    }
     let mut found: Option<PathBuf> = None;
     for candidate in default_whisper_binary_candidates() {
         if let Some(path) = find_in_path(candidate) {
@@ -1153,6 +1259,11 @@ async fn get_default_whisper_binary() -> Result<Option<String>, String> {
     Ok(found.map(|path| path.to_string_lossy().to_string()))
 }
 
+#[tauri::command]
+async fn get_default_ffmpeg_binary() -> Result<Option<String>, String> {
+    Ok(default_ffmpeg_path().map(|path| path.to_string_lossy().to_string()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1168,6 +1279,7 @@ pub fn run() {
             set_config,
             get_default_output_dir,
             get_default_whisper_binary,
+            get_default_ffmpeg_binary,
             check_minio
         ])
         .run(tauri::generate_context!())

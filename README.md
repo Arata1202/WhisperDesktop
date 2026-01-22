@@ -36,7 +36,7 @@ winget install Git.Git
 winget install Python.Python.3.12
 
 # Install ffmpeg
-winget install ffmpeg
+winget install --id=Gyan.FFmpeg -e
 
 # Reload PATH (log out or reboot)
 

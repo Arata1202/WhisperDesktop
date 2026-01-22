@@ -28,6 +28,7 @@ type AppConfig = {
   };
   whisper: {
     binaryPath: string;
+    ffmpegPath: string;
     modelPath: string;
     outputDir: string;
     includeTimestamps: boolean;
@@ -45,6 +46,7 @@ const defaultConfig: AppConfig = {
   },
   whisper: {
     binaryPath: "",
+    ffmpegPath: "",
     modelPath: "ggml-large-v3.bin",
     outputDir: "",
     includeTimestamps: false,
@@ -182,6 +184,14 @@ function App() {
         );
         if (binaryPath) {
           merged.whisper.binaryPath = binaryPath;
+        }
+      }
+      if (!merged.whisper.ffmpegPath.trim()) {
+        const ffmpegPath = await invoke<string | null>(
+          "get_default_ffmpeg_binary",
+        );
+        if (ffmpegPath) {
+          merged.whisper.ffmpegPath = ffmpegPath;
         }
       }
       if (!merged.whisper.outputDir.trim()) {
@@ -615,6 +625,19 @@ function App() {
                 </select>
               </label>
               <label className="field">
+                <span>WHISPER_OUTPUT_DIR</span>
+                <input
+                  type="text"
+                  value={config.whisper.outputDir}
+                  onChange={(event) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      whisper: { ...prev.whisper, outputDir: event.target.value },
+                    }))
+                  }
+                />
+              </label>
+              <label className="field">
                 <span>WHISPER_BINARY</span>
                 <input
                   type="text"
@@ -629,16 +652,17 @@ function App() {
                 />
               </label>
               <label className="field">
-                <span>WHISPER_OUTPUT_DIR</span>
+                <span>FFMPEG_BINARY</span>
                 <input
                   type="text"
-                  value={config.whisper.outputDir}
+                  value={config.whisper.ffmpegPath}
                   onChange={(event) =>
                     setConfig((prev) => ({
                       ...prev,
-                      whisper: { ...prev.whisper, outputDir: event.target.value },
+                      whisper: { ...prev.whisper, ffmpegPath: event.target.value },
                     }))
                   }
+                  placeholder="/opt/homebrew/bin/ffmpeg"
                 />
               </label>
             </div>
